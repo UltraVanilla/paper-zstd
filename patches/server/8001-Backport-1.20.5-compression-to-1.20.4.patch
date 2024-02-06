@@ -1,0 +1,222 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: josie <josiebot@ultravanilla.world>
+Date: Mon, 5 Feb 2024 12:53:27 -0700
+Subject: [PATCH] Backport 1.20.5 compression to 1.20.4
+
+
+diff --git a/build.gradle.kts b/build.gradle.kts
+index 0a00dc0d5443c248fc52bf14b2be67773336ccd5..39d9099802e136824f24bc11df274ea106ca2189 100644
+--- a/build.gradle.kts
++++ b/build.gradle.kts
+@@ -58,6 +58,7 @@ dependencies {
+     testImplementation("org.junit.jupiter:junit-jupiter:5.10.0")
+     testImplementation("org.hamcrest:hamcrest:2.2")
+     testImplementation("org.mockito:mockito-core:5.5.0")
++    implementation("org.lz4:lz4-java:1.8.0") // Backport 1.20.5 compression to 1.20.4
+ }
+ 
+ val craftbukkitPackageVersion = "1_20_R3" // Paper
+diff --git a/src/main/java/net/minecraft/server/Main.java b/src/main/java/net/minecraft/server/Main.java
+index 61840cfd64caba6595dfc99c91c76a195638d4ee..e710fc513337b3a4f7333b1c944ad83434e881d9 100644
+--- a/src/main/java/net/minecraft/server/Main.java
++++ b/src/main/java/net/minecraft/server/Main.java
+@@ -49,6 +49,7 @@ import net.minecraft.world.flag.FeatureFlags;
+ import net.minecraft.world.level.GameRules;
+ import net.minecraft.world.level.LevelSettings;
+ import net.minecraft.world.level.WorldDataConfiguration;
++import net.minecraft.world.level.chunk.storage.RegionFileVersion; // Backport 1.20.5 compression to 1.20.4
+ import net.minecraft.world.level.dimension.LevelStem;
+ import net.minecraft.world.level.levelgen.WorldDimensions;
+ import net.minecraft.world.level.levelgen.WorldOptions;
+@@ -136,6 +137,7 @@ public class Main {
+             DedicatedServerSettings dedicatedserversettings = new DedicatedServerSettings(optionset); // CraftBukkit - CLI argument support
+ 
+             dedicatedserversettings.forceSave();
++            RegionFileVersion.configure(dedicatedserversettings.getProperties().regionFileCompression); // Backport 1.20.5 compression to 1.20.4
+             Path path2 = Paths.get("eula.txt");
+             Eula eula = new Eula(path2);
+             // Paper start - load config files early for access below if needed
+diff --git a/src/main/java/net/minecraft/server/dedicated/DedicatedServerProperties.java b/src/main/java/net/minecraft/server/dedicated/DedicatedServerProperties.java
+index bab2471616404821671264ccefd729cab8d0bf58..408b7a0c8b601589c195bf2819f5c7a96b10d107 100644
+--- a/src/main/java/net/minecraft/server/dedicated/DedicatedServerProperties.java
++++ b/src/main/java/net/minecraft/server/dedicated/DedicatedServerProperties.java
+@@ -94,6 +94,7 @@ public class DedicatedServerProperties extends Settings<DedicatedServerPropertie
+     public final boolean broadcastConsoleToOps;
+     public final int maxWorldSize;
+     public final boolean syncChunkWrites;
++    public final String regionFileCompression = this.get("region-file-compression", "deflate"); // Backport 1.20.5 compression to 1.20.4
+     public final boolean enableJmxMonitoring;
+     public final boolean enableStatus;
+     public final boolean hideOnlinePlayers;
+diff --git a/src/main/java/net/minecraft/world/level/chunk/storage/RegionFile.java b/src/main/java/net/minecraft/world/level/chunk/storage/RegionFile.java
+index 6cf83502a954cce9c562ec036bfeddb477d38b73..158184b1281c7199d315a0f39c38258fdb801772 100644
+--- a/src/main/java/net/minecraft/world/level/chunk/storage/RegionFile.java
++++ b/src/main/java/net/minecraft/world/level/chunk/storage/RegionFile.java
+@@ -21,6 +21,7 @@ import java.nio.file.StandardOpenOption;
+ import java.util.zip.InflaterInputStream; // Paper
+ import javax.annotation.Nullable;
+ import net.minecraft.Util;
++import net.minecraft.resources.ResourceLocation; // Backport 1.20.5 compression to 1.20.4
+ import net.minecraft.nbt.CompoundTag; // Paper
+ import net.minecraft.nbt.NbtIo; // Paper
+ import net.minecraft.world.level.ChunkPos;
+@@ -688,6 +689,18 @@ public class RegionFile implements AutoCloseable {
+     private DataInputStream createChunkInputStream(ChunkPos pos, byte flags, InputStream stream) throws IOException {
+         RegionFileVersion regionfilecompression = RegionFileVersion.fromId(flags);
+ 
++        // Backport 1.20.5 compression to 1.20.4 start
++        if (regionfilecompression == RegionFileVersion.VERSION_CUSTOM) {
++            String string = new DataInputStream(stream).readUTF();
++            ResourceLocation resourceLocation = ResourceLocation.tryParse(string);
++            if (resourceLocation != null) {
++                LOGGER.error("Unrecognized custom compression {}", resourceLocation);
++                return null;
++            }
++            LOGGER.error("Invalid custom compression id {}", string);
++            return null;
++        }
++        // Backport 1.20.5 compression to 1.20.4 end
+         if (regionfilecompression == null) {
+             RegionFile.LOGGER.error("Chunk {} has invalid chunk stream version {}", pos, flags);
+             return null;
+diff --git a/src/main/java/net/minecraft/world/level/chunk/storage/RegionFileVersion.java b/src/main/java/net/minecraft/world/level/chunk/storage/RegionFileVersion.java
+index 6210a202d27788b1304e749b5bc2d9e2b88f5a63..5c0e32afbdd0e003ae1a8fefb2b0fc03a82790cc 100644
+--- a/src/main/java/net/minecraft/world/level/chunk/storage/RegionFileVersion.java
++++ b/src/main/java/net/minecraft/world/level/chunk/storage/RegionFileVersion.java
+@@ -1,7 +1,11 @@
+ package net.minecraft.world.level.chunk.storage;
+ 
++import com.mojang.logging.LogUtils; // Backport 1.20.5 compression to 1.20.4
+ import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
+ import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
++import it.unimi.dsi.fastutil.objects.Object2ObjectMap; // Backport 1.20.5 compression to 1.20.4
++import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap; // Backport 1.20.5 compression to 1.20.4
++import it.unimi.dsi.fastutil.objects.ObjectSet; // Backport 1.20.5 compression to 1.20.4
+ import java.io.BufferedOutputStream;
+ import java.io.IOException;
+ import java.io.InputStream;
+@@ -11,41 +15,54 @@ import java.util.zip.GZIPInputStream;
+ import java.util.zip.GZIPOutputStream;
+ import java.util.zip.InflaterInputStream;
+ import javax.annotation.Nullable;
++import net.jpountz.lz4.LZ4BlockInputStream; // Backport 1.20.5 compression to 1.20.4
++import net.jpountz.lz4.LZ4BlockOutputStream; // Backport 1.20.5 compression to 1.20.4
+ import net.minecraft.util.FastBufferedInputStream;
++import org.slf4j.Logger; // Backport 1.20.5 compression to 1.20.4
+ 
+ public class RegionFileVersion {
+     public static final Int2ObjectMap<RegionFileVersion> VERSIONS = new Int2ObjectOpenHashMap<>(); // Paper - private -> public
+-    public static final RegionFileVersion VERSION_GZIP = register(new RegionFileVersion(1, (stream) -> {
+-        return new FastBufferedInputStream(new GZIPInputStream(stream));
+-    }, (stream) -> {
+-        return new BufferedOutputStream(new GZIPOutputStream(stream));
++    // Backport 1.20.5 compression to 1.20.4 start
++    private static final Logger LOGGER = LogUtils.getLogger();
++    private static final Object2ObjectMap<String, RegionFileVersion> VERSIONS_BY_NAME = new Object2ObjectOpenHashMap();
++    public static final RegionFileVersion VERSION_GZIP = RegionFileVersion.register(new RegionFileVersion(
++        1, null,
++        inputStream -> new FastBufferedInputStream(new GZIPInputStream((InputStream)inputStream)),
++        outputStream -> new BufferedOutputStream(new GZIPOutputStream((OutputStream)outputStream))
++    ));
++    public static final RegionFileVersion VERSION_DEFLATE = RegionFileVersion.register(new RegionFileVersion(
++        2, "deflate",
++        inputStream -> new FastBufferedInputStream(new InflaterInputStream((InputStream)inputStream)),
++        outputStream -> new BufferedOutputStream(new DeflaterOutputStream((OutputStream)outputStream))
++    ));
++    public static final RegionFileVersion VERSION_NONE = RegionFileVersion.register(new RegionFileVersion(
++        3, "none",
++        FastBufferedInputStream::new,
++        BufferedOutputStream::new
++    ));
++    public static final RegionFileVersion VERSION_LZ4 = RegionFileVersion.register(new RegionFileVersion(
++        4, "lz4",
++        inputStream -> new FastBufferedInputStream(new LZ4BlockInputStream((InputStream)inputStream)),
++        outputStream -> new BufferedOutputStream(new LZ4BlockOutputStream((OutputStream)outputStream))
++    ));
++    public static final RegionFileVersion VERSION_CUSTOM = RegionFileVersion.register(new RegionFileVersion(127, null, inputStream -> {
++        throw new UnsupportedOperationException();
++    }, outputStream -> {
++        throw new UnsupportedOperationException();
+     }));
+-    public static final RegionFileVersion VERSION_DEFLATE = register(new RegionFileVersion(2, (stream) -> {
+-        return new FastBufferedInputStream(new InflaterInputStream(stream));
+-    }, (stream) -> {
+-        return new BufferedOutputStream(new DeflaterOutputStream(stream));
+-    }));
+-    public static final RegionFileVersion VERSION_NONE = register(new RegionFileVersion(3, (stream) -> {
+-        return stream;
+-    }, (stream) -> {
+-        return stream;
+-    }));
+-
+-    // Paper start - Configurable region compression format
+-    public static RegionFileVersion getCompressionFormat() {
+-        return switch (io.papermc.paper.configuration.GlobalConfiguration.get().unsupportedSettings.compressionFormat) {
+-            case GZIP -> VERSION_GZIP;
+-            case ZLIB -> VERSION_DEFLATE;
+-            case NONE -> VERSION_NONE;
+-        };
+-    }
+-    // Paper end - Configurable region compression format
++    public static final RegionFileVersion DEFAULT;
++    private static volatile RegionFileVersion selected;
++    @Nullable private final String optionName;
++    // Backport 1.20.5 compression to 1.20.4 end
+ 
+     private final int id;
+     private final RegionFileVersion.StreamWrapper<InputStream> inputWrapper;
+     private final RegionFileVersion.StreamWrapper<OutputStream> outputWrapper;
+ 
+-    private RegionFileVersion(int id, RegionFileVersion.StreamWrapper<InputStream> inputStreamWrapper, RegionFileVersion.StreamWrapper<OutputStream> outputStreamWrapper) {
++    // Backport 1.20.5 compression to 1.20.4 start
++    private RegionFileVersion(int id, @Nullable String string, RegionFileVersion.StreamWrapper<InputStream> inputStreamWrapper, RegionFileVersion.StreamWrapper<OutputStream> outputStreamWrapper) {
++        this.optionName = string;
++        // Backport 1.20.5 compression to 1.20.4 end
+         this.id = id;
+         this.inputWrapper = inputStreamWrapper;
+         this.outputWrapper = outputStreamWrapper;
+@@ -53,6 +70,11 @@ public class RegionFileVersion {
+ 
+     private static RegionFileVersion register(RegionFileVersion version) {
+         VERSIONS.put(version.id, version);
++        // Backport 1.20.5 compression to 1.20.4 start
++        if (version.optionName != null) {
++            VERSIONS_BY_NAME.put(version.optionName, version);
++        }
++        // Backport 1.20.5 compression to 1.20.4 end
+         return version;
+     }
+ 
+@@ -61,6 +83,20 @@ public class RegionFileVersion {
+         return VERSIONS.get(id);
+     }
+ 
++    // Backport 1.20.5 compression to 1.20.4 start
++    public static void configure(String string) {
++        RegionFileVersion regionFileVersion = (RegionFileVersion)VERSIONS_BY_NAME.get(string);
++        if (regionFileVersion != null) {
++            selected = regionFileVersion;
++        } else {
++            LOGGER.error("Invalid `region-file-compression` value `{}` in server.properties. Please use one of: {}", string, String.join((CharSequence)", ", (Iterable<? extends CharSequence>)VERSIONS_BY_NAME.keySet()));
++        }
++    }
++
++    public static RegionFileVersion getCompressionFormat() {
++        return selected;
++    }
++    // Backport 1.20.5 compression to 1.20.4 end
+     public static boolean isValidVersion(int id) {
+         return VERSIONS.containsKey(id);
+     }
+@@ -77,6 +113,11 @@ public class RegionFileVersion {
+         return this.inputWrapper.wrap(inputStream);
+     }
+ 
++    // Backport 1.20.5 compression to 1.20.4 start
++    static {
++        selected = DEFAULT = VERSION_DEFLATE;
++    }
++    // Backport 1.20.5 compression to 1.20.4 end
+     @FunctionalInterface
+     interface StreamWrapper<O> {
+         O wrap(O object) throws IOException;
